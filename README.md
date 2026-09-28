@@ -6,7 +6,6 @@
  
 Entry for the **Snapdragon® AI Lab Build & Present Challenge 2026** (Qualcomm / Unstop), individual submission.
  
-**Logo:** [NeuroLens logo (generated with ChatGPT)](https://chatgpt.com/s/p_39d4a985357481918ddc2d19be62c7e7)
  
 ## Status (read this first)
  
