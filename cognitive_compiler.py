@@ -94,20 +94,23 @@ def detect_ambiguity_signals(text: str) -> List[str]:
 # ==============================================================================
 
 class CognitiveCompiler:
-    def __init__(self, endpoint_url: str = "http://127.0.0.1:18181/v1/chat/completions", model_name: str = "qwen3-0.6b"):
+    def __init__(self, endpoint_url: str = "http://127.0.0.1:18181/v1/chat/completions", model_name: Optional[str] = None, no_model: bool = False):
         self.endpoint_url = endpoint_url
-        self.model_name = model_name
+        self.model_name = model_name or "qwen3-0.6b"
+        self.no_model = no_model
 
     def compile(self, text: str) -> NeuroLensInsight:
         text = text.strip()
-        llm_response = self._try_geniex_inference(text)
-        if llm_response:
-            try:
-                insight = NeuroLensInsight.model_validate_json(llm_response)
-                self._hybrid_enrich(insight, text)
-                return insight
-            except Exception:
-                pass
+        if not self.no_model:
+            llm_response = self._try_geniex_inference(text)
+            if llm_response:
+                try:
+                    insight = NeuroLensInsight.model_validate_json(llm_response)
+                    self._hybrid_enrich(insight, text)
+                    insight.runtime_provenance = f"GenieX local server ({self.model_name}) via Snapdragon Hexagon NPU"
+                    return insight
+                except Exception:
+                    pass
 
         return self._local_rule_compiler(text)
 
@@ -172,41 +175,41 @@ Output valid JSON only with no markdown or formatting."""
         suggested_replies = []
         
         if "analysis" in text.lower() and "first section" in text.lower():
-            literal_meaning = "The speaker requests sending the analysis before the deadline and revisiting the first section."
-            actions.append(ActionItem(task="Send analysis", priority="high", owner="user"))
-            actions.append(ActionItem(task="Revisit and update the first section", priority="medium", owner="user"))
+            literal_meaning = "Requested actions: get the analysis over to me; revisit the first section. Time mentioned: Friday."
+            actions.append(ActionItem(task="get the analysis over to me", priority="high", owner="user"))
+            actions.append(ActionItem(task="revisit the first section", priority="medium", owner="user"))
             possible_interpretations.append(InterpretationItem(
-                interpretation="The speaker requests that completing this deliverable be prioritized.",
-                confidence=0.82,
-                evidence="'get the analysis over to me sometime before Friday'"
+                interpretation="This may be a real request phrased politely, not just a suggestion.",
+                confidence=0.70,
+                evidence="'it would probably be good' + time 'Friday'"
             ))
             possible_interpretations.append(InterpretationItem(
-                interpretation="Quality concerns exist regarding the introduction or initial methodology.",
-                confidence=0.74,
-                evidence="'I don't think we're quite there yet'"
+                interpretation="The speaker may want improvements, but has not said what to change.",
+                confidence=0.55,
+                evidence="'don't think we're quite there'"
             ))
             ambiguity_level = "medium"
-            ambiguity_reason = "The exact revisions desired for the first section are unspecified."
-            missing_info = ["Specific criteria or sections needing changes in section 1"]
-            clarifying_question = "What specific adjustments would you like made to the first section?"
+            ambiguity_reason = "vague wording: probably be good, sometime, maybe, quite there; missing: which part should change, and how"
+            missing_info = ["which part should change, and how"]
+            clarifying_question = "Which part should be changed, and how?"
             suggested_replies = [
-                "Sure, I'll update the first section and send the analysis over before Friday.",
-                "Understood. Could you clarify what changes you'd like in the first section?",
-                "Got it. Prioritizing the analysis for Friday delivery."
+                "Got it - I'll aim to have this ready by Friday.",
+                "Understood. Could you confirm the details you'd like me to focus on?",
+                "Noted, Friday. I'll follow up if anything is unclear."
             ]
 
         elif is_hinglish:
-            literal_meaning = "By tomorrow, create the presentation's architecture slide and simplify the first section."
-            actions.append(ActionItem(task="Create presentation architecture slide", priority="high", owner="user"))
-            actions.append(ActionItem(task="Simplify the first section", priority="medium", owner="user"))
+            literal_meaning = "By tomorrow (kal tak), prepare presentation architecture slide and simplify first section."
+            actions.append(ActionItem(task="create presentation architecture slide", priority="high", owner="user"))
+            actions.append(ActionItem(task="simplify first section", priority="medium", owner="user"))
             possible_interpretations.append(InterpretationItem(
-                interpretation="Urgent presentation prep required for upcoming review.",
-                confidence=0.88,
+                interpretation="Urgent presentation deliverable required for upcoming review.",
+                confidence=0.85,
                 evidence="'Kal tak presentation ka architecture slide bana dena'"
             ))
             ambiguity_level = "medium"
-            ambiguity_reason = "'Thoda simple' is subjective; specific slides/elements to simplify are not quantified."
-            missing_info = ["Target audience level for simplification", "Template format for architecture slide"]
+            ambiguity_reason = "subjective modifier: 'thoda simple'; format for architecture diagram unspecified"
+            missing_info = ["degree of simplification required", "slide template format"]
             clarifying_question = "Are there specific technical diagrams you want on the architecture slide, or a high-level overview?"
             suggested_replies = [
                 "Haan, main kal tak architecture slide bana dunga aur first section simplify kar dunga.",
@@ -251,8 +254,11 @@ Output valid JSON only with no markdown or formatting."""
 
         deadlines = []
         for dl in detected_deadlines:
+            if any(existing_dl.deadline.lower() == dl.lower() for existing_dl in deadlines): continue
             task_ref = actions[0].task if actions else "General Request"
             deadlines.append(DeadlineItem(task=task_ref, deadline=dl, detected_via="deterministic_rule"))
+
+        runtime_note = "Rule-based engine (no model used) - model disabled. Runs on CPU." if self.no_model else "Rule-based engine fallback (local model unreachable). Runs on CPU."
 
         return NeuroLensInsight(
             source_text=text,
@@ -267,7 +273,7 @@ Output valid JSON only with no markdown or formatting."""
             ),
             clarifying_question=clarifying_question,
             suggested_replies=suggested_replies,
-            runtime_provenance="NeuroLens Hybrid Rule-Engine (Snapdragon NPU Optimized)"
+            runtime_provenance=runtime_note
         )
 
 
@@ -275,6 +281,9 @@ def main():
     parser = argparse.ArgumentParser(description="NeuroLens Cognitive Compiler Prototype")
     parser.add_argument("input", nargs="?", help="Input text string or path to .txt file")
     parser.add_argument("--json", action="store_true", help="Output pure JSON format")
+    parser.add_argument("--no-model", action="store_true", help="Force rule-based CPU engine (skip local LLM endpoint)")
+    parser.add_argument("--model", type=str, default="qwen3-0.6b", help="Model name exposed by local OpenAI endpoint (e.g. GenieX)")
+    parser.add_argument("--endpoint", type=str, default="http://127.0.0.1:18181/v1/chat/completions", help="Local OpenAI-compatible endpoint URL")
     args = parser.parse_args()
 
     if not args.input:
@@ -290,7 +299,7 @@ def main():
     else:
         raw_text = args.input
 
-    compiler = CognitiveCompiler()
+    compiler = CognitiveCompiler(endpoint_url=args.endpoint, model_name=args.model, no_model=args.no_model)
     insight = compiler.compile(raw_text)
 
     if args.json:
@@ -299,43 +308,44 @@ def main():
         print("=" * 70)
         print("NEUROLENS COGNITIVE COMPILER OUTPUT")
         print("=" * 70)
-        print(f"\n[SOURCE UTTERANCE]\n\"{insight.source_text}\"")
-        print(f"\n[1. LITERAL MEANING (KNOWN)]\n{insight.literal_meaning}")
+        print(f"\n[SOURCE]\n\"{insight.source_text}\"")
+        print(f"\n[1. LITERAL MEANING - KNOWN]\n{insight.literal_meaning}")
         
-        print("\n[2. EXTRACTED ACTIONABLE TASKS]")
+        print("\n[2. ACTIONS]")
         if insight.actions:
             for i, act in enumerate(insight.actions, 1):
-                print(f"  {i}. [ ] {act.task} (Priority: {act.priority.upper()})")
+                print(f"  {i}. [ ] {act.task} (priority: {act.priority})")
         else:
             print("  (No explicit action items detected)")
 
-        print("\n[3. DETECTED DEADLINES]")
+        print("\n[3. DEADLINES]")
         if insight.deadlines:
             for dl in insight.deadlines:
-                print(f"  - Task: {dl.task} | Deadline: {dl.deadline} ({dl.detected_via})")
+                print(f"  - {dl.deadline} <- {dl.task} ({dl.detected_via})")
         else:
             print("  (No explicit deadline specified)")
 
-        print("\n[4. POSSIBILITY-BASED INTERPRETATIONS (INFERRED)]")
+        print("\n[4. POSSIBLE INTERPRETATIONS - INFERRED]")
         for p in insight.possible_interpretations:
-            print(f"  - Interpretation: {p.interpretation}")
-            print(f"    Confidence: {int(p.confidence * 100)}% | Evidence: \"{p.evidence}\"")
+            print(f"  - {p.interpretation}")
+            score_label = f"score {int(p.confidence * 100)}% (heuristic score from matched signals, not a model probability)" if "Rule-based" in insight.runtime_provenance else f"confidence {int(p.confidence * 100)}%"
+            print(f"    {score_label} | evidence: {p.evidence}")
 
-        print(f"\n[5. UNCERTAINTY & AMBIGUITY (UNKNOWN)]")
-        print(f"  Level:  {insight.ambiguity.level.upper()}")
-        print(f"  Reason: {insight.ambiguity.reason}")
+        print(f"\n[5. AMBIGUITY - UNKNOWN]")
+        print(f"  level: {insight.ambiguity.level.upper()}")
+        print(f"  why:   {insight.ambiguity.reason}")
         if insight.ambiguity.missing_information:
-            print(f"  Missing: {', '.join(insight.ambiguity.missing_information)}")
+            print(f"  missing: {', '.join(insight.ambiguity.missing_information)}")
 
         if insight.clarifying_question:
-            print(f"\n[6. SUGGESTED CLARIFYING QUESTION]")
+            print(f"\n[6. CLARIFYING QUESTION]")
             print(f"  \"{insight.clarifying_question}\"")
 
         print("\n[7. SUGGESTED REPLIES]")
         for reply in insight.suggested_replies:
             print(f"  -> \"{reply}\"")
 
-        print(f"\n[RUNTIME PROVENANCE]\n{insight.runtime_provenance}")
+        print(f"\n[RUNTIME]\n{insight.runtime_provenance}")
         print("=" * 70)
 
 if __name__ == "__main__":
