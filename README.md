@@ -1,199 +1,169 @@
-# NeuroLens: Private, Real-Time AI for Cognitive Accessibility
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Platform: Snapdragon Windows ARM64](https://img.shields.io/badge/Platform-Snapdragon%20Windows%20ARM64-red.svg)](https://www.qualcomm.com/laptops/products/snapdragon-x-elite)
-[![Status: Prototype In Progress](https://img.shields.io/badge/Status-Proposal%20%2F%20Prototype%20Verified-success.svg)]()
-
-> **"Understand the moment. Organize the thought. Keep everything private."**
-
----
-
-## 📌 Submission Overview
-* **Competition:** Snapdragon® AI Lab Build & Present Challenge 2026 (Qualcomm / Unstop)
-* **Target Hardware:** Snapdragon®-powered HP PCs (Snapdragon X Elite, X Plus, X2 Elite)
-* **Core Paradigm:** On-Device Cognitive Accessibility Layer (Speech + Vision + Text $\rightarrow$ Structured Actions)
-* **Status:** Proposal Phase / Working Functional Prototype Verified
-
----
-
-## 💡 What is NeuroLens?
-NeuroLens sits as a **private, local AI layer between messy human communication and the user’s brain**. 
-
-It is designed for people who benefit from reduced cognitive load (students in fast lectures, professionals in rapid meetings, neurodivergent individuals navigating indirect communication). It **does not** diagnose medical conditions or claim to read minds. Instead, it converts:
-
-$$\text{Speech} + \text{Text} + \text{Visual Context} \longrightarrow \mathbf{Meaning} + \mathbf{Actions} + \mathbf{Deadlines} + \mathbf{Interpretations} + \mathbf{Safe\ Replies}$$
-
-While keeping **all sensitive processing 100% on the Snapdragon PC**.
-
----
-
-## 🚀 Key Architectural Innovation: The Cognitive Compiler
-
-Instead of generating unstructured conversational paragraphs like a generic chatbot, NeuroLens functions as a **Cognitive Compiler**:
-
+# NeuroLens
+ 
+**Private, on-device AI for cognitive accessibility, designed for Snapdragon Windows PCs.**
+ 
+> *Understand the moment. Organize the thought. Keep everything private.*
+ 
+Entry for the **Snapdragon® AI Lab Build & Present Challenge 2026** (Qualcomm / Unstop), individual submission.
+ 
+**Logo:** [NeuroLens logo (generated with ChatGPT)](https://chatgpt.com/s/p_39d4a985357481918ddc2d19be62c7e7)
+ 
+## Status (read this first)
+ 
+This repository is a **proposal plus a working, tested prototype of the core logic**. It is not yet the full application, and nothing here has been measured on Snapdragon hardware yet.
+ 
+| Area | State |
+|---|---|
+| Structured-output schema (Pydantic) | Implemented, tested |
+| Rule-based Cognitive Compiler: actions, deadlines, ambiguity scoring, clarifying questions, evidence-linked interpretations | Implemented, tested (CPU) |
+| Local-model client (OpenAI-compatible endpoint, JSON validation, automatic fallback) | Implemented; tested with a stubbed model. **Not yet run against a real GenieX server** |
+| Speech input (VAD + Whisper-Base), screenshot input (Qwen3-VL), Focus Mode, SQLite memory, Privacy Center UI, Streamlit UI | **Planned**, not started |
+| NPU execution, latency and accuracy benchmarks | **Not measured yet** |
+ 
+Every result printed by the prototype states which engine produced it (see `[RUNTIME]` in the sample output below).
+ 
+## The problem
+ 
+Fast, indirect communication ("it would probably be good if you could get that over before Friday...") is hard to turn into clear next steps. That is costly for students in lectures, professionals in meetings, and anyone who benefits from less cognitive load. Cloud assistants can help, but they require sending conversations and screen content to a remote service.
+ 
+NeuroLens is an accessibility and productivity aid. It is **not** a medical tool and does not diagnose or treat any condition.
+ 
+## The idea: a Cognitive Compiler with Known / Inferred / Unknown
+ 
+Instead of a free-form chat reply, NeuroLens compiles messy language into a fixed, validated structure:
+ 
+- **Known**: literal meaning, explicit tasks, and deadlines found by deterministic rules.
+- **Inferred**: possible readings of ambiguous wording, each with the words that support it. It never states hidden intent as fact.
+- **Unknown**: what is missing (task, deadline, referent), with a clarifying question instead of a guess.
+## Architecture
+ 
 ```
-                         NEUROLENS
-                              │
-          ┌───────────────────┼───────────────────┐
-          │                   │                   │
-        HEAR                 SEE                THINK
-          │                   │                   │
-    Whisper-Base         Qwen3-VL-4B           Qwen3-0.6B
-   (Hexagon NPU)        (GenieX / NPU)       (GenieX / NPU)
-          │                   │                   │
-          └───────────────────┼───────────────────┘
-                              │
-                      CONTEXT ENGINE
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-           MEANING         ACTIONS         MEMORY
-       Interpretations   Tasks/Deadlines  Preferences
-              │               │               │
-              └───────────────┼───────────────┘
-                              │
-                        USER CONTROL
-                    Local-Only / Ephemeral
+ Microphone ─► VAD ─► Whisper-Base ─┐                       [planned]
+ Screenshot ─► Qwen3-VL-4B ─────────┤                       [planned]
+ Typed text ────────────────────────┤                       [implemented]
+                                    ▼
+                          Cognitive Compiler                [implemented]
+              (local model via GenieX  +  rule engines)     model path: written, not yet run on device
+                                    ▼
+                          Pydantic validation               [implemented]
+                                    ▼
+             Tasks / Focus Mode / local SQLite / UI         [planned]
 ```
-
-### The "Known ≠ Inferred ≠ Unknown" Framework
-1. **Known (Factual):** Literal meaning, explicit tasks, and deterministic deadlines (`"before Friday"`).
-2. **Inferred (Possibility-Based):** Multi-hypothesis interpretations with confidence scores and explicit textual evidence citations (e.g. *"Priority request: 82% confidence, backed by 'before Friday'"*).
-3. **Unknown (Zero-Hallucination Ambiguity):** When instructions lack key parameters (missing deadlines, vague pronouns like *"look into that"*), NeuroLens flags ambiguity and **generates targeted clarifying questions** instead of hallucinating answers.
-
----
-
-## ⚡ Why Snapdragon & On-Device NPU?
-NeuroLens processes intimate verbal conversations, sensitive business meetings, and personal workflow notes. Sending this telemetry to third-party cloud servers violates personal privacy and enterprise security.
-
-### Real Snapdragon NPU Model Pathway
-| Capability | Model | Runtime / Execution Path |
-| :--- | :--- | :--- |
-| **Speech (ASR)** | **Whisper-Base** | Qualcomm AI Hub verified on Snapdragon X Elite / X Plus / X2 Elite via NPU |
-| **Cognitive Compiler** | **Qwen3-0.6B** / **Phi-4-Mini** | GenieX / QAIRT local OpenAI-compatible endpoint (`http://127.0.0.1:18181/v1`) |
-| **Vision (ContextLens)** | **Qwen3-VL-4B-Instruct** | GenieX / QAIRT visual reasoning on user-selected screen regions |
-| **Deterministic Rules** | Rule Engine | Fast regex temporal parsing on local CPU |
-
-> **Architectural Principle:** AI inference is accelerated on the Snapdragon NPU; application logic, local SQLite storage, and UI run seamlessly on the local CPU.
-
----
-
-## 🔒 Privacy Center: Ephemeral by Default
-* **Ephemeral Ingestion:** Raw microphone audio and visual context are processed strictly in RAM and immediately discarded.
-* **Offline Lock:** Core models operate with zero network connection.
-* **Local Memory Only:** User preferences (*"prefers concise responses"*) are stored in local SQLite; raw conversation transcripts are never permanently logged without explicit consent.
-* **One-Click Purge:** Immediate local data destruction on command.
-
----
-
-## 🛠 Project Structure
-
-```text
-NeuroLens/
-│
-├── cognitive_compiler.py      # Core Pydantic-validated Cognitive Compiler prototype
-├── generate_deck.py           # Presentation pitch deck generator (.pptx)
-├── requirements.txt           # Project dependencies
-├── LICENSE                    # Apache-2.0 open-source license
-│
-├── samples/                   # Real-world test transcripts
-│   ├── meeting_01.txt         # Indirect meeting request with deadline
-│   ├── ambiguous_01.txt       # Ambiguous statement ("look into that sometime")
-│   └── hinglish_01.txt        # Bilingual conversational request
-│
-├── tests/
-│   └── test_cognitive_compiler.py  # Automated pytest verification suite
-│
-└── docs/                      # Challenge submission documentation
-    ├── project_description.md # 2-page brief proposal for competition submission
-    └── NeuroLens_Pitch_Deck.pptx # 10-slide pitch presentation
-```
-
----
-
-## 💻 Quick Start & Running the Prototype
-
-### 1. Installation
-Ensure Python 3.10+ is installed:
+ 
+AI inference is intended to run on the Snapdragon NPU where supported. The UI, storage and rule logic run on the CPU.
+ 
+## Snapdragon plan (targets, not results)
+ 
+| Role | Candidate model | Intended runtime | Status |
+|---|---|---|---|
+| Speech-to-text | Whisper-Base | Qualcomm AI Hub / QAI AppBuilder | Not yet run on my device |
+| Reasoning (compiler) | Qwen3-0.6B (Phi-4-Mini as alternative) | GenieX local OpenAI-compatible server | Client written; not yet run on my device |
+| Screen understanding | Qwen3-VL-4B-Instruct | GenieX | Planned |
+ 
+These models are listed on Qualcomm AI Hub for Snapdragon X-series devices. Whether each one runs on the NPU of my specific machine, and how fast, will be verified and reported here. No performance numbers are claimed until then.
+ 
+## Privacy design goals
+ 
+Design principles for the full application (not yet implemented):
+ 
+- Raw audio and screenshots are processed in memory and discarded; nothing is saved unless the user chooses to save it.
+- Memory holds user-approved preferences, not conversation logs.
+- No cloud AI service is required for core inference. Offline behavior will be tested and documented before being claimed.
+## Try the prototype
+ 
 ```bash
 pip install -r requirements.txt
+ 
+# Rule-based engine only (no model needed)
+python cognitive_compiler.py samples/meeting_01.txt --no-model
+python cognitive_compiler.py samples/ambiguous_01.txt --no-model
+python cognitive_compiler.py samples/hinglish_01.txt --no-model
+python cognitive_compiler.py samples/meeting_01.txt --no-model --json
+ 
+# With a local OpenAI-compatible server (for example GenieX at http://127.0.0.1:18181/v1)
+python cognitive_compiler.py samples/meeting_01.txt --model <model-id-your-server-exposes>
+ 
+# Tests (no network or model required)
+python -m pytest tests -v
 ```
-
-### 2. Run Cognitive Compiler on Sample Transcripts
-```bash
-# Test on meeting transcript
-python cognitive_compiler.py samples/meeting_01.txt
-
-# Test on ambiguous transcript (ambiguity & clarification generation)
-python cognitive_compiler.py samples/ambiguous_01.txt
-
-# Test on Hinglish transcript
-python cognitive_compiler.py samples/hinglish_01.txt
-
-# Export verified JSON schema output
-python cognitive_compiler.py samples/meeting_01.txt --json
-```
-
-### 3. Run Automated Tests
-```bash
-python -m pytest tests/test_cognitive_compiler.py -v
-```
-
----
-
-## 📊 Sample Execution Output
-
+ 
+If the model is unreachable or returns output that fails validation, the compiler falls back to the rule-based engine and says so in the output.
+ 
+## Real output (rule-based engine, `--no-model`)
+ 
 ```text
 ======================================================================
 NEUROLENS COGNITIVE COMPILER OUTPUT
 ======================================================================
-
-[SOURCE UTTERANCE]
+ 
+[SOURCE]
 "It would probably be good if you could get the analysis over to me sometime before Friday. And maybe revisit the first section because I don't think we're quite there yet."
-
-[1. LITERAL MEANING (KNOWN)]
-The speaker requests sending the analysis before the deadline and revisiting the first section.
-
-[2. EXTRACTED ACTIONABLE TASKS]
-  1. [ ] Send analysis (Priority: HIGH)
-  2. [ ] Revisit and update the first section (Priority: MEDIUM)
-
-[3. DETECTED DEADLINES]
-  - Task: Send analysis | Deadline: Friday (deterministic_rule)
-
-[4. POSSIBILITY-BASED INTERPRETATIONS (INFERRED)]
-  - Interpretation: The speaker requests that completing this deliverable be prioritized.
-    Confidence: 82% | Evidence: "'get the analysis over to me sometime before Friday'"
-  - Interpretation: Quality concerns exist regarding the introduction or initial methodology.
-    Confidence: 74% | Evidence: "'I don't think we're quite there yet'"
-
-[5. UNCERTAINTY & AMBIGUITY (UNKNOWN)]
-  Level:  MEDIUM
-  Reason: The exact revisions desired for the first section are unspecified.
-  Missing: Specific criteria or sections needing changes in section 1
-
-[6. SUGGESTED CLARIFYING QUESTION]
-  "What specific adjustments would you like made to the first section?"
-
+ 
+[1. LITERAL MEANING - KNOWN]
+Requested actions: get the analysis over to me; revisit the first section. Time mentioned: Friday.
+ 
+[2. ACTIONS]
+  1. [ ] get the analysis over to me (priority: high)
+  2. [ ] revisit the first section (priority: medium)
+ 
+[3. DEADLINES]
+  - Friday <- get the analysis over to me (deterministic_rule)
+ 
+[4. POSSIBLE INTERPRETATIONS - INFERRED]
+  - This may be a real request phrased politely, not just a suggestion.
+    score 70% (heuristic score from matched signals, not a model probability) | evidence: 'it would probably be good' + time 'Friday'
+  - The speaker may want improvements, but has not said what to change.
+    score 55% (heuristic score from matched signals, not a model probability) | evidence: 'don't think we're quite there'
+ 
+[5. AMBIGUITY - UNKNOWN]
+  level: MEDIUM
+  why:   vague wording: probably be good, sometime, maybe, quite there; missing: which part should change, and how
+ 
+[6. CLARIFYING QUESTION]
+  "Which part should be changed, and how?"
+ 
 [7. SUGGESTED REPLIES]
-  -> "Sure, I'll update the first section and send the analysis over before Friday."
-  -> "Understood. Could you clarify what changes you'd like in the first section?"
-  -> "Got it. Prioritizing the analysis for Friday delivery."
-
-[RUNTIME PROVENANCE]
-NeuroLens Hybrid Rule-Engine (Snapdragon NPU Optimized)
+  -> "Got it - I'll aim to have this ready by Friday."
+  -> "Understood. Could you confirm the details you'd like me to focus on?"
+  -> "Noted, Friday. I'll follow up if anything is unclear."
+ 
+[RUNTIME]
+Rule-based engine (no model used) - model disabled. Runs on CPU.
 ======================================================================
 ```
-
----
-
-## 📜 Evaluation Criteria Alignment
-* **Technical Implementation:** Hybrid neural + deterministic rule engine; strict Pydantic data modeling; GenieX local OpenAI endpoint integration for Snapdragon NPU acceleration.
-* **Application Use Case & Innovation:** Pioneering "Known ≠ Inferred ≠ Unknown" framework with possibility-based interpretations and anti-hallucination ambiguity questioning for cognitive accessibility.
-* **Deployment & Accessibility:** Ephemeral-by-default local memory, offline lock, and zero cloud API dependency.
-* **Presentation & Documentation:** Comprehensive repository docs, verified test suite, 2-page formal brief, and 10-slide pitch presentation.
-
----
-
-## 📄 License
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+ 
+The interpretation scores from the rule engine are heuristic signals, not model probabilities, and are labelled that way.
+ 
+## Evaluation plan (targets, not results)
+ 
+- A small hand-labelled set of about 30 utterances (explicit tasks, deadlines, ambiguous statements, multiple tasks, Hinglish).
+- Metrics: task precision and recall, deadline accuracy, ambiguity classification accuracy.
+- On-device measurements once the models run: ASR latency, time to first token, end-to-end latency, and CPU versus NPU comparison.
+- Offline test: disable the network and confirm core processing still works.
+## Known limitations
+ 
+- The rule-based engine is pattern matching. It handles common phrasings and will miss many others. That is why the model path exists.
+- Task text is extracted close to the speaker's wording, not rewritten.
+- Hinglish support is minimal (a few common verb patterns).
+- No speech, vision, memory or UI yet.
+## Roadmap
+ 
+1. Run GenieX with Qwen3-0.6B on the Snapdragon laptop and record real output and timings.
+2. Add Whisper-Base transcription from an audio file, then live microphone input.
+3. Simple UI, task creation, and Focus Mode.
+4. Local memory and Privacy Center.
+5. Screenshot understanding with Qwen3-VL.
+## Repository layout
+ 
+```
+cognitive_compiler.py   core prototype
+generate_deck.py        builds docs/NeuroLens_Pitch_Deck.pptx
+samples/                three example inputs
+tests/                  pytest suite
+docs/                   project description and pitch deck
+```
+ 
+## License
+ 
+See [LICENSE](LICENSE).
+ 
