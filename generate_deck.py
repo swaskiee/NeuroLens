@@ -1,357 +1,410 @@
 """
-Generate NeuroLens Pitch Deck Presentation (.pptx)
-Complies with Snapdragon AI Lab Build & Present Challenge 8-10 slide structure.
+Builds docs/NeuroLens_Pitch_Deck.pptx (10 slides) with python-pptx.
+
+The prototype-output slide runs the real rule-based compiler, so the slide
+always matches what `python cognitive_compiler.py --no-model` prints.
+
+Usage:  python generate_deck.py
 """
+import os
 
+from lxml import etree
 from pptx import Presentation
-from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.dml import MSO_LINE
+from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.oxml.ns import qn
+from pptx.util import Inches, Pt
 
-def create_deck(output_path="docs/NeuroLens_Pitch_Deck.pptx"):
+from cognitive_compiler import CognitiveCompiler
+
+# ---- palette: deep navy dominant, teal = implemented, amber = planned/inferred ----
+NAVY = RGBColor(0x0B, 0x1F, 0x33)
+INK = RGBColor(0x1B, 0x2A, 0x3A)
+SLATE = RGBColor(0x55, 0x65, 0x75)
+TEAL = RGBColor(0x0E, 0x8F, 0x83)
+TEAL_TINT = RGBColor(0xDD, 0xF1, 0xEE)
+AMBER = RGBColor(0xF2, 0xB1, 0x34)
+ROSE = RGBColor(0xC0, 0x4B, 0x3B)
+PAPER = RGBColor(0xF5, 0xF7, 0xFA)
+WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+MIST = RGBColor(0xC9, 0xD6, 0xE3)
+LINE = RGBColor(0xB8, 0xC4, 0xD0)
+
+HEAD_FONT = "Cambria"
+BODY_FONT = "Calibri"
+
+MEETING = (
+    "It would probably be good if you could get the analysis over to me sometime before Friday. "
+    "And maybe revisit the first section because I don't think we're quite there yet."
+)
+
+
+# ------------------------------------------------------------------ helpers ----
+def bg(slide, color):
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = color
+
+
+def box(slide, x, y, w, h, fill=None, line=None, dash=False, rounded=True, line_w=1.25):
+    shape = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE if rounded else MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h)
+    )
+    if rounded:
+        shape.adjustments[0] = 0.06
+    shape.shadow.inherit = False
+    if fill is None:
+        shape.fill.background()
+    else:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = fill
+    if line is None:
+        shape.line.fill.background()
+    else:
+        shape.line.color.rgb = line
+        shape.line.width = Pt(line_w)
+        if dash:
+            shape.line.dash_style = MSO_LINE.DASH
+    return shape
+
+
+def write(shape_or_frame, paras, anchor=MSO_ANCHOR.TOP, margins=(0.15, 0.1, 0.15, 0.1), align=PP_ALIGN.LEFT):
+    """paras: list of paragraphs; each paragraph is a list of (text, size, bold, color[, italic, font])."""
+    tf = shape_or_frame.text_frame if hasattr(shape_or_frame, "text_frame") else shape_or_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = anchor
+    tf.margin_left, tf.margin_top, tf.margin_right, tf.margin_bottom = [Inches(m) for m in margins]
+    for i, segs in enumerate(paras):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.alignment = align
+        if i > 0:
+            p.space_before = Pt(6)
+        for seg in segs:
+            text, size, bold, color = seg[:4]
+            r = p.add_run()
+            r.text = text
+            r.font.size = Pt(size)
+            r.font.bold = bold
+            r.font.color.rgb = color
+            r.font.italic = seg[4] if len(seg) > 4 else False
+            r.font.name = seg[5] if len(seg) > 5 else BODY_FONT
+    return tf
+
+
+def label(slide, x, y, w, h, paras, **kw):
+    tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+    write(tb, paras, margins=kw.pop("margins", (0, 0, 0, 0)), **kw)
+    return tb
+
+
+def title(slide, text, dark=False):
+    color = WHITE if dark else NAVY
+    label(slide, 0.7, 0.5, 11.9, 0.9, [[(text, 34, True, color, False, HEAD_FONT)]], anchor=MSO_ANCHOR.MIDDLE)
+
+
+def arrow(slide, x1, y1, x2, y2, color=SLATE, width=2.0):
+    c = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, Inches(x1), Inches(y1), Inches(x2), Inches(y2))
+    c.line.color.rgb = color
+    c.line.width = Pt(width)
+    tail = etree.SubElement(c.line._get_or_add_ln(), qn("a:tailEnd"))
+    tail.set("type", "triangle")
+    return c
+
+
+def badge(slide, x, y, d, text, fill, color=WHITE, size=16):
+    c = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(x), Inches(y), Inches(d), Inches(d))
+    c.shadow.inherit = False
+    c.fill.solid()
+    c.fill.fore_color.rgb = fill
+    c.line.fill.background()
+    write(c, [[(text, size, True, color)]], anchor=MSO_ANCHOR.MIDDLE, margins=(0, 0, 0, 0), align=PP_ALIGN.CENTER)
+    return c
+
+
+def node(slide, x, y, w, h, head, sub, status):
+    """Architecture node. status: 'done' (teal, solid) or 'planned' (white, dashed)."""
+    if status == "done":
+        s = box(slide, x, y, w, h, fill=TEAL)
+        hc, sc = WHITE, TEAL_TINT
+    else:
+        s = box(slide, x, y, w, h, fill=WHITE, line=SLATE, dash=True)
+        hc, sc = INK, SLATE
+    paras = [[(head, 16, True, hc)]]
+    if sub:
+        paras.append([(sub, 12, False, sc)])
+    write(s, paras, anchor=MSO_ANCHOR.MIDDLE, align=PP_ALIGN.CENTER)
+    return s
+
+
+# -------------------------------------------------------------------- deck ----
+def build(output_path="docs/NeuroLens_Pitch_Deck.pptx"):
+    insight = CognitiveCompiler(use_model=False).compile(MEETING)
     prs = Presentation()
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
-    blank_layout = prs.slide_layouts[6]
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    blank = prs.slide_layouts[6]
 
-    DARK_NAVY = RGBColor(16, 24, 40)
-    WHITE = RGBColor(255, 255, 255)
-    QUALCOMM_RED = RGBColor(224, 32, 32)
-    SLATE_GRAY = RGBColor(71, 84, 103)
-    LIGHT_BG = RGBColor(248, 250, 252)
-    ACCENT_BLUE = RGBColor(2, 122, 255)
-    CARD_BG = RGBColor(238, 242, 246)
+    # 1 ── Title ───────────────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, NAVY)
+    label(s, 0.9, 2.0, 11.5, 1.4, [[("NeuroLens", 66, True, WHITE, False, HEAD_FONT)]])
+    label(s, 0.9, 3.4, 11.5, 0.7, [[("Private, real-time AI for cognitive accessibility", 26, False, AMBER)]])
+    label(
+        s, 0.9, 4.3, 11.5, 0.6,
+        [[("Understand the moment. Organize the thought. Keep everything private.", 18, False, MIST, True)]],
+    )
+    label(
+        s, 0.9, 6.2, 11.5, 0.6,
+        [[("Snapdragon® AI Lab Build & Present Challenge 2026   |   Swati Dubey   |   Proposal + tested prototype", 14, False, MIST)]],
+    )
 
-    def set_slide_background(slide, color):
-        background = slide.background
-        fill = background.fill
-        fill.solid()
-        fill.fore_color.rgb = color
-
-    def add_header(slide, title_text, category="NEUROLENS | SNAPDRAGON AI LAB 2026"):
-        box = slide.shapes.add_textbox(Inches(0.8), Inches(0.5), Inches(11.7), Inches(1.2))
-        tf = box.text_frame
-        tf.word_wrap = True
-        tf.margin_left = tf.margin_top = tf.margin_right = tf.margin_bottom = 0
-        
-        p0 = tf.paragraphs[0]
-        p0.text = category.upper()
-        p0.font.size = Pt(11)
-        p0.font.bold = True
-        p0.font.color.rgb = QUALCOMM_RED
-        
-        p1 = tf.add_paragraph()
-        p1.text = title_text
-        p1.font.size = Pt(28)
-        p1.font.bold = True
-        p1.font.color.rgb = DARK_NAVY
-
-    # SLIDE 1: Title Slide
-    s1 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s1, DARK_NAVY)
-    
-    t_box = s1.shapes.add_textbox(Inches(1.0), Inches(2.2), Inches(11.3), Inches(3.2))
-    tf1 = t_box.text_frame
-    tf1.word_wrap = True
-    
-    p = tf1.paragraphs[0]
-    p.text = "NeuroLens"
-    p.font.size = Pt(54)
-    p.font.bold = True
-    p.font.color.rgb = WHITE
-    
-    p2 = tf1.add_paragraph()
-    p2.text = "Private, Real-Time AI for Cognitive Accessibility"
-    p2.font.size = Pt(24)
-    p2.font.color.rgb = ACCENT_BLUE
-    p2.space_before = Pt(10)
-
-    p3 = tf1.add_paragraph()
-    p3.text = "\"Understand the moment. Organize the thought. Keep everything private.\""
-    p3.font.size = Pt(16)
-    p3.font.italic = True
-    p3.font.color.rgb = RGBColor(200, 210, 225)
-    p3.space_before = Pt(14)
-
-    p4 = tf1.add_paragraph()
-    p4.text = "Snapdragon® AI Lab Build & Present Challenge 2026 | Optimized for Snapdragon-Powered HP PCs"
-    p4.font.size = Pt(13)
-    p4.font.bold = True
-    p4.font.color.rgb = QUALCOMM_RED
-    p4.space_before = Pt(24)
-
-    # SLIDE 2: The Core Problem
-    s2 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s2, LIGHT_BG)
-    add_header(s2, "Human Communication Is Fast. Understanding It Isn't Always.")
-    
-    box2 = s2.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf2 = box2.text_frame
-    tf2.word_wrap = True
-    
-    points2 = [
-        ("Cognitive Friction in Daily Conversations", "Subtle, indirect speech like 'It would probably be good if you revisited...' creates severe executive load for neurodivergent minds (ADHD, social processing challenges) and overwhelmed students."),
-        ("The Implicit-to-Action Gap", "Unstructured communication rarely delivers cleanly packaged task lists. Users spend massive mental energy disambiguating what is a real task vs. casual discussion."),
-        ("The Cloud Privacy Dilemma", "Sending daily conversations, lectures, and screen context to cloud LLMs creates unacceptable privacy, data governance, and compliance risks."),
-        ("The Need for On-Device Translation", "A private cognitive layer sitting between messy spoken/visual information and the user's brain—running 100% locally on the device.")
+    # 2 ── Problem ─────────────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "Fast, indirect communication hides the real task")
+    card = box(s, 0.7, 1.9, 6.0, 3.9, fill=WHITE, line=LINE)
+    write(
+        card,
+        [
+            [("What was said", 13, True, SLATE)],
+            [("“It would probably be good if you could get the analysis over to me sometime before Friday.”", 20, False, INK, True, HEAD_FONT)],
+            [("", 8, False, INK)],
+            [("What a person has to work out, live", 13, True, SLATE)],
+            [("Is this a request or a suggestion?", 17, False, INK)],
+            [("What is the deadline, exactly?", 17, False, INK)],
+            [("What else is unclear?", 17, False, INK)],
+        ],
+        margins=(0.35, 0.3, 0.35, 0.3),
+    )
+    rows = [
+        ("1", "Indirect wording", "Polite phrasing can hide real requests and deadlines."),
+        ("2", "No time to parse", "Lectures and meetings move on before you have worked it out."),
+        ("3", "Cloud help costs privacy", "Assistants that fix this usually need your conversations sent to a remote server."),
     ]
-    for title, desc in points2:
-        p = tf2.add_paragraph()
-        p.text = f"• {title}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = DARK_NAVY
-        p.space_before = Pt(12)
-        
-        run = p.add_run()
-        run.text = desc
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    y = 1.9
+    for n, head, body in rows:
+        badge(s, 7.2, y + 0.1, 0.6, n, TEAL)
+        label(s, 8.05, y, 4.6, 1.4, [[(head, 20, True, NAVY)], [(body, 15, False, SLATE)]])
+        y += 1.6
 
-    # SLIDE 3: Why Existing AI Falls Short
-    s3 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s3, LIGHT_BG)
-    add_header(s3, "Why Existing Tools Fall Short")
-    
-    box3 = s3.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf3 = box3.text_frame
-    tf3.word_wrap = True
-    
-    table_data = [
-        ("Generic Transcription (Whisper APIs)", "Dumps thousands of raw words without understanding. Increases cognitive load instead of reducing it."),
-        ("Cloud AI Chatbots (ChatGPT / Cloud Claude)", "Leaks sensitive personal thoughts and workplace meetings to remote cloud infrastructure with recurring latency."),
-        ("Productivity Apps (Todoist / Notion)", "Requires manual typing and tedious task breakdown. Fails to capture live verbal context at the moment of utterance."),
-        ("Hallucinatory AI Assistants", "Asserts false certainty about ambiguous intent instead of clearly stating what is unknown or asking for clarification.")
+    # 3 ── Gap ─────────────────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "What is missing today")
+    cards = [
+        ("Transcription only", "Gives you every word.", "Does not say what matters or what to do."),
+        ("Cloud AI assistants", "Can summarize and answer.", "Needs private conversations sent off-device."),
+        ("Task apps", "Organize tasks well.", "Start from tasks you type in yourself."),
+        ("Overconfident answers", "Sound certain.", "Rarely say what is unclear or ask instead."),
     ]
-    for k, v in table_data:
-        p = tf3.add_paragraph()
-        p.text = f"✖ {k}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = DARK_NAVY
-        p.space_before = Pt(12)
-        
-        run = p.add_run()
-        run.text = v
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    x = 0.7
+    for head, does, gap in cards:
+        c = box(s, x, 1.9, 2.85, 3.5, fill=WHITE, line=LINE)
+        write(
+            c,
+            [
+                [(head, 19, True, NAVY, False, HEAD_FONT)],
+                [("", 6, False, INK)],
+                [(does, 15, False, SLATE)],
+                [("", 6, False, INK)],
+                [("Gap", 12, True, ROSE)],
+                [(gap, 16, False, INK)],
+            ],
+            margins=(0.25, 0.3, 0.25, 0.25),
+        )
+        x += 3.05
 
-    # SLIDE 4: Solution: The Cognitive Compiler
-    s4 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s4, LIGHT_BG)
-    add_header(s4, "The Solution: NeuroLens Cognitive Compiler")
-    
-    box4 = s4.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf4 = box4.text_frame
-    tf4.word_wrap = True
-    
-    intro4 = tf4.paragraphs[0]
-    intro4.text = "NeuroLens is not a generic chatbot. It is a formal Cognitive Compiler:"
-    intro4.font.size = Pt(18)
-    intro4.font.bold = True
-    intro4.font.color.rgb = DARK_NAVY
-    
-    steps4 = [
-        ("Parse", "Captures raw speech chunks via VAD and user-selected visual screen context."),
-        ("Disambiguate", "Evaluates linguistic ambiguity, extracts deterministic deadlines, and tags uncertainty."),
-        ("Structure", "Emits verified JSON containing explicit tasks, priority, deadlines, and multi-hypothesis interpretations."),
-        ("Present", "Adapts information density across Minimal, Balanced, and Detailed cognitive load modes.")
+    # 4 ── Solution flow ───────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "From messy language to structure")
+    steps = [
+        ("Parse", "Split speech or text into clauses. Find dates and times with rules."),
+        ("Disambiguate", "Score how vague the wording is. Spot missing task, deadline or referent."),
+        ("Structure", "Fill a fixed schema: actions, deadlines, interpretations, questions."),
+        ("Validate", "Output must pass the schema, or the system falls back to rules."),
     ]
-    for s_title, s_desc in steps4:
-        p = tf4.add_paragraph()
-        p.text = f"► {s_title}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = ACCENT_BLUE
-        p.space_before = Pt(10)
-        
-        run = p.add_run()
-        run.text = s_desc
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    x = 0.7
+    for i, (head, body) in enumerate(steps):
+        n = box(s, x, 2.0, 2.7, 0.9, fill=NAVY)
+        write(n, [[(f"{i + 1}  {head}", 20, True, WHITE)]], anchor=MSO_ANCHOR.MIDDLE, align=PP_ALIGN.CENTER)
+        label(s, x, 3.15, 2.7, 2.0, [[(body, 16, False, INK)]])
+        if i < 3:
+            arrow(s, x + 2.75, 2.45, x + 3.05, 2.45, color=SLATE)
+        x += 3.05
+    note = box(s, 0.7, 5.5, 11.9, 1.1, fill=TEAL_TINT)
+    write(
+        note,
+        [[("Not a chatbot. ", 18, True, NAVY), ("It returns the same fixed structure every time, so every field can be shown, checked and reused.", 18, False, INK)]],
+        anchor=MSO_ANCHOR.MIDDLE,
+        margins=(0.35, 0.1, 0.35, 0.1),
+    )
 
-    # SLIDE 5: Core Innovation: Known ≠ Inferred ≠ Unknown
-    s5 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s5, LIGHT_BG)
-    add_header(s5, "Core Innovation: Known ≠ Inferred ≠ Unknown")
-    
-    box5 = s5.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf5 = box5.text_frame
-    tf5.word_wrap = True
-    
-    framework = [
-        ("1. KNOWN (Factual & Explicit)", "Literal meaning, explicit task requirements, and deterministic deadlines ('before Friday')."),
-        ("2. INFERRED (Possibility-Based with Evidence)", "Probabilistic interpretations with attached confidence and verbatim quotes ('Priority request: 82% confidence, backed by before Friday')."),
-        ("3. UNKNOWN (Zero-Hallucination Ambiguity)", "When instructions are vague, NeuroLens generates targeted clarifying questions instead of guessing intent ('What specific changes are needed in section 1?').")
+    # 5 ── Known / Inferred / Unknown ─────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "Known  ≠  Inferred  ≠  Unknown")
+    kiu = [
+        ("KNOWN", TEAL, WHITE, "What is stated", "Literal meaning, explicit tasks, deadlines found by rules.", "Deadline: Friday"),
+        ("INFERRED", AMBER, INK, "What is possible", "Readings of vague wording, always with the words that support them.", "May be a real request, not just a suggestion"),
+        ("UNKNOWN", ROSE, WHITE, "What is missing", "Gaps become a question, not a guess.", "“Which part should be changed, and how?”"),
     ]
-    for f_title, f_desc in framework:
-        p = tf5.add_paragraph()
-        p.text = f"{f_title}\n"
-        p.font.bold = True
-        p.font.size = Pt(17)
-        p.font.color.rgb = DARK_NAVY
-        p.space_before = Pt(12)
-        
-        run = p.add_run()
-        run.text = f"   {f_desc}"
-        run.font.bold = False
-        run.font.size = Pt(15)
-        run.font.color.rgb = SLATE_GRAY
+    x = 0.7
+    for head, fill, fg, sub, body, example in kiu:
+        c = box(s, x, 1.9, 3.85, 4.5, fill=fill)
+        write(
+            c,
+            [
+                [(head, 30, True, fg, False, HEAD_FONT)],
+                [(sub, 16, True, fg)],
+                [("", 6, False, fg)],
+                [(body, 17, False, fg)],
+                [("", 10, False, fg)],
+                [("From the meeting example", 12, True, fg)],
+                [(example, 16, False, fg, True)],
+            ],
+            margins=(0.35, 0.35, 0.35, 0.3),
+        )
+        x += 4.02
 
-    # SLIDE 6: Snapdragon Native NPU Architecture
-    s6 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s6, LIGHT_BG)
-    add_header(s6, "Snapdragon® Hardware Architecture & NPU Pathway")
-    
-    box6 = s6.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf6 = box6.text_frame
-    tf6.word_wrap = True
-    
-    p = tf6.paragraphs[0]
-    p.text = "AI inference is offloaded to the Hexagon NPU; application logic & database reside on the CPU."
-    p.font.size = Pt(17)
-    p.font.bold = True
-    p.font.color.rgb = DARK_NAVY
-    
-    npu_stack = [
-        ("Speech (ASR)", "Whisper-Base — Qualcomm AI Hub verified for Snapdragon X Elite / X Plus; fast local speech-to-text without cloud streaming."),
-        ("Reasoning (Cognitive Compiler)", "Qwen3-0.6B / Phi-4-Mini — Local GenieX / QAIRT execution on Hexagon NPU; sub-second JSON compilation (~28 tokens/s)."),
-        ("Vision (ContextLens)", "Qwen3-VL-4B-Instruct — On-device visual understanding of slides, charts, and screen context via GenieX."),
-        ("Local API Bridge", "GenieX OpenAI-compatible local server (http://127.0.0.1:18181/v1) — No cloud network requests required.")
+    # 6 ── Architecture ────────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, WHITE)
+    title(s, "Architecture: what exists and what is planned")
+    node(s, 0.7, 1.7, 1.9, 1.0, "Microphone", None, "planned")
+    node(s, 3.0, 1.7, 1.6, 1.0, "VAD", None, "planned")
+    node(s, 5.0, 1.7, 2.0, 1.0, "Whisper-Base", "speech to text", "planned")
+    node(s, 0.7, 3.3, 1.9, 1.0, "Screenshot", "user-selected", "planned")
+    node(s, 5.0, 3.3, 2.0, 1.0, "Qwen3-VL-4B", "screen to text", "planned")
+    node(s, 5.0, 4.9, 2.0, 1.0, "Typed text", None, "done")
+    node(s, 7.7, 2.8, 2.5, 2.2, "Cognitive Compiler", "rules + local model (GenieX)", "done")
+    node(s, 10.7, 3.4, 2.0, 1.0, "Schema validation", "Pydantic", "done")
+    node(s, 10.7, 5.0, 2.0, 1.1, "Tasks, Focus, memory, UI", None, "planned")
+    arrow(s, 2.6, 2.2, 3.0, 2.2)
+    arrow(s, 4.6, 2.2, 5.0, 2.2)
+    arrow(s, 2.6, 3.8, 5.0, 3.8)
+    arrow(s, 7.0, 2.2, 7.7, 3.4)
+    arrow(s, 7.0, 3.8, 7.7, 3.9)
+    arrow(s, 7.0, 5.4, 7.7, 4.5)
+    arrow(s, 10.2, 3.9, 10.7, 3.9)
+    arrow(s, 11.7, 4.4, 11.7, 5.0)
+    key1 = box(s, 0.7, 6.55, 0.3, 0.3, fill=TEAL, rounded=False)
+    label(s, 1.1, 6.5, 3.6, 0.4, [[("Implemented and tested on CPU", 13, False, INK)]], anchor=MSO_ANCHOR.MIDDLE)
+    key2 = box(s, 4.8, 6.55, 0.3, 0.3, fill=WHITE, line=SLATE, dash=True, rounded=False)
+    label(s, 5.2, 6.5, 2.0, 0.4, [[("Planned", 13, False, INK)]], anchor=MSO_ANCHOR.MIDDLE)
+    label(
+        s, 7.0, 6.5, 5.7, 0.4,
+        [[("Model path written; not yet run on my Snapdragon device", 13, False, SLATE, True)]],
+        anchor=MSO_ANCHOR.MIDDLE,
+    )
+
+    # 7 ── Snapdragon plan ─────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "Snapdragon plan: targets, not results")
+    rows = [
+        ("Role", "Candidate model", "Intended runtime", "Status"),
+        ("Speech to text", "Whisper-Base", "Qualcomm AI Hub / QAI AppBuilder", "Not yet run on my device"),
+        ("Reasoning", "Qwen3-0.6B (Phi-4-Mini alt.)", "GenieX local server", "Client written; not yet run"),
+        ("Screen understanding", "Qwen3-VL-4B-Instruct", "GenieX", "Planned"),
     ]
-    for mod, desc in npu_stack:
-        p = tf6.add_paragraph()
-        p.text = f"• {mod}: "
-        p.font.bold = True
-        p.font.size = Pt(15)
-        p.font.color.rgb = QUALCOMM_RED
-        p.space_before = Pt(10)
-        
-        run = p.add_run()
-        run.text = desc
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    tbl = s.shapes.add_table(4, 4, Inches(0.7), Inches(1.9), Inches(11.9), Inches(3.0)).table
+    for ci, w in enumerate([2.6, 3.2, 3.4, 2.7]):
+        tbl.columns[ci].width = Inches(w)
+    for ri, row in enumerate(rows):
+        tbl.rows[ri].height = Inches(0.75)
+        for ci, val in enumerate(row):
+            cell = tbl.cell(ri, ci)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = NAVY if ri == 0 else (WHITE if ri % 2 else TEAL_TINT)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            tf = cell.text_frame
+            tf.word_wrap = True
+            tf.margin_left = tf.margin_right = Inches(0.15)
+            run = tf.paragraphs[0].add_run()
+            run.text = val
+            run.font.name = BODY_FONT
+            run.font.size = Pt(16)
+            run.font.bold = ri == 0 or ci == 0
+            run.font.color.rgb = WHITE if ri == 0 else INK
+    call = box(s, 0.7, 5.35, 11.9, 1.2, fill=WHITE, line=LINE)
+    write(
+        call,
+        [[("Inference is intended to run on the Snapdragon NPU where supported; UI, storage and rules run on the CPU. ", 16, False, INK),
+          ("No speed or accuracy numbers are claimed until measured on my own laptop.", 16, True, NAVY)]],
+        anchor=MSO_ANCHOR.MIDDLE,
+        margins=(0.35, 0.1, 0.35, 0.1),
+    )
 
-    # SLIDE 7: Privacy by Design
-    s7 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s7, LIGHT_BG)
-    add_header(s7, "Privacy by Design: Ephemeral by Default")
-    
-    box7 = s7.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf7 = box7.text_frame
-    tf7.word_wrap = True
-    
-    priv_points = [
-        ("Ephemeral Speech & Context", "Raw audio chunks are processed in RAM and immediately discarded. Never permanently logged without explicit user consent."),
-        ("Network Independence (Offline Lock)", "Full AI processing verified with network disconnected. Zero outbound telemetry or cloud API calls."),
-        ("Granular Local Memory", "Stores user communication preferences ('prefers concise replies', 'break tasks into small steps') locally in SQLite rather than profiling raw transcripts."),
-        ("One-Click Data Purge", "Guaranteed local data destruction with immediate database deletion.")
+    # 8 ── Privacy ─────────────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "Privacy by design (goals for the full app)")
+    items = [
+        ("Ephemeral by default", "Audio and screenshots are processed in memory and discarded unless the user chooses to save."),
+        ("Preferences, not logs", "Memory keeps user-approved settings such as “prefers short answers”, not conversation history."),
+        ("No cloud AI for core use", "Local models handle inference. Offline behaviour will be tested before it is claimed."),
     ]
-    for p_title, p_desc in priv_points:
-        p = tf7.add_paragraph()
-        p.text = f"✔ {p_title}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = DARK_NAVY
-        p.space_before = Pt(12)
-        
-        run = p.add_run()
-        run.text = p_desc
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    y = 1.9
+    for i, (head, body) in enumerate(items):
+        c = box(s, 0.7, y, 11.9, 1.3, fill=WHITE, line=LINE)
+        badge(s, 1.0, y + 0.3, 0.7, str(i + 1), NAVY, size=20)
+        label(s, 2.0, y + 0.15, 10.3, 1.1, [[(head, 20, True, NAVY)], [(body, 16, False, SLATE)]], anchor=MSO_ANCHOR.MIDDLE)
+        y += 1.5
+    label(s, 0.7, 6.5, 11.9, 0.5, [[("These are design goals; the privacy features are not built yet.", 14, False, SLATE, True)]])
 
-    # SLIDE 8: Live Demonstration Workflow
-    s8 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s8, LIGHT_BG)
-    add_header(s8, "Live Prototype Demonstration")
-    
-    box8 = s8.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf8 = box8.text_frame
-    tf8.word_wrap = True
-    
-    demo_flow = [
-        ("Input Transcript", "\"It would probably be good if you could get the analysis over to me sometime before Friday. And maybe revisit the first section because I don't think we're quite there yet.\""),
-        ("Extracted Action Items", "1. [ ] Send analysis (Priority: HIGH)   |   2. [ ] Revisit first section (Priority: MEDIUM)"),
-        ("Detected Deadlines", "• Friday (Resolved via deterministic hybrid rule + NPU inference)"),
-        ("Possibility & Evidence", "• Interpretation: Priority deliverable (82% confidence, evidence: 'get the analysis over before Friday')"),
-        ("Ambiguity & Clarification", "• Ambiguity: MEDIUM (revisions to section 1 unspecified) -> Clarifying Question: 'What specific adjustments would you like made to section 1?'")
+    # 9 ── Prototype output (real) ─────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, PAPER)
+    title(s, "Prototype today: real output from the rule-based engine")
+    left = box(s, 0.7, 1.8, 4.9, 3.9, fill=WHITE, line=LINE)
+    write(
+        left,
+        [[("Input", 13, True, SLATE)],
+         [("“" + MEETING + "”", 16, False, INK, True, HEAD_FONT)]],
+        margins=(0.3, 0.3, 0.3, 0.3),
+    )
+    deadline = ", ".join(sorted({d.deadline for d in insight.deadlines})) or "none"
+    right = box(s, 5.9, 1.8, 6.7, 3.9, fill=WHITE, line=TEAL, line_w=2)
+    paras = [[("Output", 13, True, TEAL)], [("Actions", 13, True, SLATE)]]
+    paras += [[(f"[ ]  {a.task}  ({a.priority})", 16, False, INK)] for a in insight.actions]
+    paras += [
+        [("Deadline", 13, True, SLATE)],
+        [(deadline, 16, False, INK)],
+        [("Ambiguity", 13, True, SLATE)],
+        [(insight.ambiguity.level.upper(), 16, True, ROSE)],
+        [("Clarifying question", 13, True, SLATE)],
+        [(f"“{insight.clarifying_question}”", 16, False, INK, True)],
     ]
-    for d_title, d_desc in demo_flow:
-        p = tf8.add_paragraph()
-        p.text = f"[{d_title}]\n"
-        p.font.bold = True
-        p.font.size = Pt(15)
-        p.font.color.rgb = ACCENT_BLUE
-        p.space_before = Pt(8)
-        
-        run = p.add_run()
-        run.text = f"  {d_desc}"
-        run.font.bold = False
-        run.font.size = Pt(14)
-        run.font.color.rgb = DARK_NAVY
+    write(right, paras, margins=(0.35, 0.25, 0.35, 0.2))
+    label(
+        s, 0.7, 6.0, 11.9, 0.6,
+        [[("Produced on CPU by the rule engine (python cognitive_compiler.py --no-model). The local-model path has not yet been run on Snapdragon.", 13, False, SLATE, True)]],
+    )
 
-    # SLIDE 9: Evaluation & Benchmarking Plan
-    s9 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s9, LIGHT_BG)
-    add_header(s9, "Target Metrics & Evaluation Plan")
-    
-    box9 = s9.shapes.add_textbox(Inches(0.8), Inches(2.0), Inches(11.7), Inches(4.8))
-    tf9 = box9.text_frame
-    tf9.word_wrap = True
-    
-    eval_metrics = [
-        ("Task Extraction Precision & Recall", ">90% benchmark across controlled conversational and lecture transcripts."),
-        ("Deadline Extraction Accuracy", ">95% accuracy via dual neural + deterministic rule engine."),
-        ("End-to-End Latency Target", "Sub-second turnaround on Snapdragon X NPU platform for real-time responsiveness."),
-        ("Honest Benchmark Policy", "All latency and token metrics are documented as measured directly on target Snapdragon hardware, without inflated cloud assumptions.")
+    # 10 ── Status and next ────────────────────────────────────────────────────
+    s = prs.slides.add_slide(blank)
+    bg(s, NAVY)
+    title(s, "Where it stands and what comes next", dark=True)
+    cols = [
+        ("Done", TEAL, WHITE,
+         ["Structured-output schema", "Rule-based compiler", "Model client with validation and fallback", "16 unit tests"]),
+        ("Next", AMBER, INK,
+         ["Run GenieX + Qwen3 on my laptop", "Whisper-Base on audio", "Task creation, Focus Mode, simple UI", "Screenshot input with Qwen3-VL"]),
+        ("To measure", WHITE, INK,
+         ["Task and deadline accuracy on ~30 labelled samples", "Latency: ASR, first token, end to end", "CPU vs NPU", "Offline test"]),
     ]
-    for m_title, m_desc in eval_metrics:
-        p = tf9.add_paragraph()
-        p.text = f"• {m_title}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = DARK_NAVY
-        p.space_before = Pt(12)
-        
-        run = p.add_run()
-        run.text = m_desc
-        run.font.bold = False
-        run.font.color.rgb = SLATE_GRAY
+    x = 0.7
+    for head, fill, fg, lines in cols:
+        c = box(s, x, 1.9, 3.85, 3.9, fill=fill)
+        paras = [[(head, 26, True, fg, False, HEAD_FONT)]] + [[("•  " + ln, 16, False, fg)] for ln in lines]
+        write(c, paras, margins=(0.35, 0.3, 0.3, 0.3))
+        x += 4.02
 
-    # SLIDE 10: Roadmap & Snapdragon Opportunity
-    s10 = prs.slides.add_slide(blank_layout)
-    set_slide_background(s10, DARK_NAVY)
-    
-    box10 = s10.shapes.add_textbox(Inches(0.8), Inches(1.0), Inches(11.7), Inches(5.8))
-    tf10 = box10.text_frame
-    tf10.word_wrap = True
-    
-    p = tf10.paragraphs[0]
-    p.text = "Roadmap & The Snapdragon® Advantage"
-    p.font.size = Pt(32)
-    p.font.bold = True
-    p.font.color.rgb = WHITE
-    
-    roadmap = [
-        ("Phase 1 (Completed Prototype)", "Pydantic-validated Cognitive Compiler, hybrid deadline engine, ambiguity detector, and multi-scenario verification."),
-        ("Phase 2 (Hackathon MVP)", "Streamlit calm UI integration, live Whisper-Base microphone ingestion, and GenieX local server binding on Snapdragon X PC."),
-        ("Phase 3 (Multimodal Extension)", "Qwen3-VL ContextLens for instant slide/document region understanding."),
-        ("Long-term Vision", "Empowering millions of neurodivergent users and professionals with private, on-device cognitive augmentation powered by Qualcomm Snapdragon.")
-    ]
-    for r_title, r_desc in roadmap:
-        p = tf10.add_paragraph()
-        p.text = f"\n✔ {r_title}: "
-        p.font.bold = True
-        p.font.size = Pt(16)
-        p.font.color.rgb = ACCENT_BLUE
-        
-        run = p.add_run()
-        run.text = r_desc
-        run.font.bold = False
-        run.font.color.rgb = RGBColor(220, 230, 242)
-
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     prs.save(output_path)
-    print(f"Presentation successfully created at: {output_path}")
+    print(f"Saved {output_path}")
+
 
 if __name__ == "__main__":
-    create_deck()
+    build()

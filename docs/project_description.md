@@ -1,83 +1,60 @@
 # NeuroLens: Private, Real-Time AI for Cognitive Accessibility
-**Project Proposal — Snapdragon® AI Lab Build & Present Challenge 2026**
 
----
+**Project description: Snapdragon® AI Lab Build & Present Challenge 2026**
+Swati Dubey, individual participant | Repository: github.com/swaskiee/NeuroLens
 
-## 1. Executive Summary & Tagline
-> **"Understand the moment. Organize the thought. Keep everything private."**
+*"Understand the moment. Organize the thought. Keep everything private."*
 
-**NeuroLens** is a private, on-device cognitive accessibility layer engineered specifically for Snapdragon®-powered Windows PCs. Rather than diagnosing conditions or claiming to infer subjective emotional states, NeuroLens bridges the gap between messy human communication and executive processing. It continuously transforms unstructured speech, text, and user-selected visual context into structured tasks, deadlines, possibility-based interpretations, and safe suggested responses.
+## 1. Summary
 
-By leveraging Qualcomm® on-device AI acceleration (Hexagon™ NPU via GenieX and QAI AppBuilder), NeuroLens guarantees zero cloud leakage for intimate spoken thoughts, private meeting recordings, and personal workflows.
+NeuroLens is a proposed on-device assistant for Snapdragon-powered Windows PCs. It takes speech, text and (optionally) a user-selected screenshot and turns them into structured next steps: what was asked, by when, what is unclear, and what to ask or reply. It is designed to keep sensitive conversations and screen content on the device, using local AI models on the Snapdragon NPU where supported.
 
----
+NeuroLens is an accessibility and productivity aid. It does not diagnose or treat any condition and does not claim to know what a speaker "really" feels or intends.
 
-## 2. Problem Statement & Accessibility Need
-Human communication is rapid, implicit, and often overloaded with ambiguity:
-- **Indirect Requests:** Phrases like *"It would probably be good if..."* conceal strict operational requirements.
-- **Ambiguous Scope:** Phrases like *"Maybe look into that sometime"* waste mental energy on speculation.
-- **Cognitive Overload:** Students in fast-paced lectures and neurodivergent professionals with ADHD/executive dysfunction experience cognitive friction parsing what is *actionable* vs. what is *ambiguous*.
-- **The Cloud Privacy Trap:** Existing solutions (ChatGPT, cloud transcription) require transmitting voice and screen data to remote cloud servers—a major violation of privacy for enterprise meetings and private study.
+## 2. Problem
 
----
+Real communication is fast and indirect. "It would probably be good if you could get the analysis over sometime before Friday" is a request with a deadline, but it is easy to miss in a live meeting or lecture. People who benefit from lower cognitive load, such as students following fast lectures, professionals in busy meetings, and anyone who finds indirect phrasing hard to parse, have to work out the real task, the deadline and the missing details in real time.
 
-## 3. The Core Innovation: Cognitive Compiler ("Known ≠ Inferred ≠ Unknown")
-NeuroLens reframes unstructured language through a formal **Cognitive Compiler**:
+Cloud assistants can help with this, but they require sending private conversations and screen content to a remote service. That is a poor fit for personal, workplace or study material.
 
-$$\text{Raw Utterance} \longrightarrow \begin{cases} \mathbf{Known} & \text{(Literal meaning, explicit tasks, deadlines)} \\ \mathbf{Inferred} & \text{(Plausible interpretations with confidence \& evidence)} \\ \mathbf{Unknown} & \text{(Ambiguities \& explicit clarifying questions)} \end{cases}$$
+## 3. Solution: a Cognitive Compiler
 
-### Key Differentiators:
-1. **Possibility-Based Interpretation:** When intent is ambiguous, NeuroLens offers multi-hypothesis interpretations with attached textual evidence rather than hallucinating intent.
-2. **Zero-Hallucination Ambiguity Engine:** When parameters are missing (unclear owner, vague timeline), the system generates targeted clarifying questions (*"What specific changes are needed?"*) rather than inventing data.
-3. **Deterministic + Neural Hybrid:** Obvious temporal markers ("Friday", "tomorrow", "kal tak") are resolved via high-speed deterministic regex rules, offloading routine work and validating neural output.
+NeuroLens compiles messy language into a fixed, validated structure rather than a free-form chat reply. Its core idea is to keep three things separate:
 
----
+| Layer | What it contains | How it is produced |
+|---|---|---|
+| **Known** | Literal meaning, explicit tasks, deadlines | Rules for obvious dates and times, plus the model |
+| **Inferred** | Possible readings of ambiguous wording, each with supporting words from the input | Model and heuristics, always phrased as possibilities |
+| **Unknown** | Missing task, deadline or referent, and a clarifying question | Uncertainty scoring; the system asks instead of guessing |
 
-## 4. Hardware & Software Architecture on Snapdragon
-NeuroLens runs as a hybrid pipeline where heavy neural inference is mapped to the Snapdragon NPU, while application logic, databases, and UI reside on the CPU:
+Other design choices: the model's output must pass a Pydantic schema or the system falls back to deterministic rules; deadlines are extracted by rules first, so the model is not trusted for them; and the level of detail shown can be tuned (minimal to detailed) to limit cognitive load.
 
-```
-[ Microphone ]           [ Screen Snipping ]
-      │ (Audio Stream)          │ (Selected Region)
-      ▼                         ▼
- [Silero / WebRTC VAD]   [Qwen3-VL-4B-Instruct]
-      │                         │ (Visual Understanding)
-      ▼                         │
-[Whisper-Base on NPU]           │
-      │ (Transcript Buffer)     │
-      └────────────┬────────────┘
-                   ▼
-       [Cognitive Compiler]
-  (Qwen3-0.6B / Phi-4-Mini on NPU)
-   + Deterministic Rule Engines
-                   │
-                   ▼
-         [Pydantic Validator]
-                   │
-       ┌───────────┴───────────┐
-       ▼                       ▼
- [Local SQLite DB]       [Calm Accessibility UI]
-(Ephemeral RAM Default) (Minimal / Balanced / Detailed)
-```
+## 4. Architecture and Snapdragon plan
 
-### Model Stack (Qualcomm AI Hub Verified):
-- **ASR (Speech):** Whisper-Base (Qualcomm AI Hub verified for Snapdragon X Elite / X Plus; 200 token sequence, sub-second transcription).
-- **Fast Reasoning / Compiler:** Qwen3-0.6B (429 MB Q4_0 executing on Hexagon NPU via GenieX, ~28 tokens/s).
-- **Vision Context:** Qwen3-VL-4B-Instruct (On-device visual understanding of slides, emails, and code snippets).
-- **Local API Gateway:** GenieX OpenAI-compatible local HTTP endpoint (`http://127.0.0.1:18181/v1`), ensuring zero cloud network egress.
+Audio goes through voice-activity detection and Whisper-Base for transcription. Optional screenshots go to Qwen3-VL-4B-Instruct. Text from either source goes to the Cognitive Compiler, which uses a small local language model (Qwen3-0.6B, with Phi-4-Mini as an alternative) served through GenieX's OpenAI-compatible local endpoint, combined with rule engines. Output is validated, then shown in the UI and optionally saved to local SQLite storage.
 
----
+These models are listed on Qualcomm AI Hub for Snapdragon X-series devices. The plan is for inference to run on the Hexagon NPU where supported, with the UI, storage and rule logic on the CPU. I will verify NPU execution and measure latency on my own Snapdragon laptop and report the results. No performance figures are claimed in this document.
 
-## 5. Privacy, Trust & Ephemeral Architecture
-- **Ephemeral by Default:** Audio streams and raw transcripts are processed in memory and discarded upon session completion unless the user explicitly clicks *"Save Session"*.
-- **Offline Lock:** Core models run completely detached from the internet.
-- **Physical NPU Lineage:** Every extracted task or interpretation provides an explainable evidence citation linking back to verbatim transcript markers.
+## 5. Privacy design
 
----
+Design goals for the full application:
 
-## 6. Evaluation Framework & Next Steps
-- **Empirical Metric Targets:**
-  - Task Extraction Precision & Recall > 90% across controlled multi-turn scenarios.
-  - Deadline Accuracy > 95% using the hybrid deterministic-neural engine.
-  - Sub-second interaction latency target on Snapdragon X-series hardware.
-- **Project Status:** Proposal Phase & Functional Python/Pydantic Cognitive Compiler Prototype verified.
+- Raw audio and screenshots are processed in memory and discarded unless the user chooses to save.
+- Memory stores user-approved preferences (for example "prefers short answers"), not conversation logs.
+- Core inference needs no cloud AI service. Offline operation will be tested and documented before it is claimed.
+
+## 6. Current status
+
+**Implemented and tested (CPU):** the structured-output schema, the rule-based compiler (actions, deadlines, ambiguity scoring, clarifying questions, evidence-linked interpretations), a local-model client with schema validation and automatic fallback, and a 16-test suite. The model path has been tested with a stubbed model; it has not yet been run against a real GenieX server.
+
+**Planned:** speech input (VAD, Whisper-Base), screenshot understanding (Qwen3-VL), Focus Mode, local memory, Privacy Center and a simple UI.
+
+**Not yet done:** any measurement on Snapdragon hardware.
+
+## 7. Evaluation plan
+
+A small hand-labelled set of about 30 utterances (explicit tasks, deadlines, ambiguous statements, multiple tasks, Hinglish), scored for task precision and recall, deadline accuracy and ambiguity classification. On-device: ASR latency, time to first token, end-to-end latency, and CPU versus NPU comparison. An offline test with the network disabled. All numbers will be measured, not assumed.
+
+## 8. Limitations and responsible use
+
+The rule engine is pattern matching and will miss many phrasings, which is why a model path exists. Small local models can make mistakes, so every interpretation carries its evidence and the system prefers asking a question over guessing. NeuroLens is not a medical, diagnostic or emotion-detection product.
